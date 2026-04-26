@@ -12,6 +12,8 @@ from .ai.cover_letter import write_cover_letter
 from .ai.match_score import score_job
 from .ai.tailor_resume import tailor_resume
 from .pdf.render import render_cover_letter, render_resume
+from .scrapers.himalayas import HimalayasScraper
+from .scrapers.remoteok import RemoteOKScraper
 from .scrapers.remotive import RemotiveScraper
 from .scrapers.working_nomads import WorkingNomadsScraper
 from .title_filter import matches_target
@@ -44,7 +46,12 @@ TARGET_ROLES = [
     "Business Intelligence Intern",
 ]
 
-SCRAPERS = [RemotiveScraper(), WorkingNomadsScraper()]
+SCRAPERS = [
+    RemotiveScraper(),
+    WorkingNomadsScraper(),
+    RemoteOKScraper(),
+    HimalayasScraper(),
+]
 
 
 @asynccontextmanager
@@ -70,6 +77,30 @@ def _filters_from_query(
     return out
 
 
+def _render_dashboard(request: Request, conn, *, flash: str | None = None, filters: dict | None = None):
+    if filters is None:
+        filters = {"status": None, "source": None, "min_score": None, "query": None}
+    rows = db.list_jobs(conn, **filters)
+    sources = db.distinct_sources(conn)
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "rows": rows,
+            "statuses": sorted(db.VALID_STATUSES),
+            "sources": sources,
+            "roles": TARGET_ROLES,
+            "filters": {
+                "status": filters.get("status") or "",
+                "source": filters.get("source") or "",
+                "min_score": filters.get("min_score") if filters.get("min_score") is not None else "",
+                "q": filters.get("query") or "",
+            },
+            "flash": flash,
+        },
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
@@ -80,24 +111,7 @@ def dashboard(
 ):
     filters = _filters_from_query(status, source, min_score, q)
     with db.connect() as conn:
-        rows = db.list_jobs(conn, **filters)
-        sources = db.distinct_sources(conn)
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "rows": rows,
-            "statuses": sorted(db.VALID_STATUSES),
-            "sources": sources,
-            "roles": TARGET_ROLES,
-            "filters": {
-                "status": status or "",
-                "source": source or "",
-                "min_score": min_score or "",
-                "q": q or "",
-            },
-        },
-    )
+        return _render_dashboard(request, conn, filters=filters)
 
 
 @app.post("/refresh", response_class=HTMLResponse)
@@ -124,25 +138,14 @@ def refresh(request: Request):
                         new_count += 1
                     else:
                         seen_count += 1
-        rows = db.list_jobs(conn)
-
-    flash = (
-        f"Refreshed: {new_count} new, {seen_count} already seen, "
-        f"{filtered_count} filtered out by title, "
-        f"{pruned_count} stale rows pruned"
-    )
-    if errors:
-        flash += f" ({len(errors)} errors)"
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "rows": rows,
-            "statuses": sorted(db.VALID_STATUSES),
-            "roles": TARGET_ROLES,
-            "flash": flash,
-        },
-    )
+        flash = (
+            f"Refreshed: {new_count} new, {seen_count} already seen, "
+            f"{filtered_count} filtered out by title, "
+            f"{pruned_count} stale rows pruned"
+        )
+        if errors:
+            flash += f" ({len(errors)} errors)"
+        return _render_dashboard(request, conn, flash=flash)
 
 
 @app.post("/jobs/{job_id}/status", response_class=HTMLResponse)
@@ -275,18 +278,7 @@ def score_all(request: Request):
                 errors.append(f"job {row['id']}: {e}")
                 if len(errors) >= 3:
                     break  # bail early on repeated failures (likely API key/quota)
-        rows = db.list_jobs(conn)
-
-    flash = f"Scored {scored} jobs"
-    if errors:
-        flash += f" — stopped after {len(errors)} errors. First: {errors[0]}"
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "rows": rows,
-            "statuses": sorted(db.VALID_STATUSES),
-            "roles": TARGET_ROLES,
-            "flash": flash,
-        },
-    )
+        flash = f"Scored {scored} jobs"
+        if errors:
+            flash += f" — stopped after {len(errors)} errors. First: {errors[0]}"
+        return _render_dashboard(request, conn, flash=flash)
