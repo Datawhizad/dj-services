@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS resume_versions (
     summary TEXT,
     generated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cover_letters (
+    job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    pdf_path TEXT,
+    json_path TEXT,
+    summary TEXT,
+    generated_at TEXT NOT NULL
+);
 """
 
 INDEXES = """
@@ -115,10 +123,13 @@ def list_jobs(conn: sqlite3.Connection, limit: int = 200) -> list[sqlite3.Row]:
     return conn.execute(
         """SELECT j.id, j.source, j.title, j.company, j.location, j.url,
                   j.posted_at, j.scraped_at, j.match_score, j.match_reason,
-                  a.status, r.pdf_path AS resume_pdf
+                  a.status,
+                  r.pdf_path AS resume_pdf,
+                  c.pdf_path AS cover_letter_pdf
            FROM jobs j
            LEFT JOIN applications a ON a.job_id = j.id
            LEFT JOIN resume_versions r ON r.job_id = j.id
+           LEFT JOIN cover_letters c ON c.job_id = j.id
            ORDER BY (j.match_score IS NULL), j.match_score DESC, j.scraped_at DESC
            LIMIT ?""",
         (limit,),
@@ -137,6 +148,16 @@ def save_resume_version(
 ) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO resume_versions (job_id, pdf_path, json_path, summary, generated_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (job_id, pdf_path, json_path, summary, datetime.utcnow().isoformat(timespec="seconds")),
+    )
+
+
+def save_cover_letter(
+    conn: sqlite3.Connection, job_id: int, pdf_path: str, json_path: str, summary: str
+) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO cover_letters (job_id, pdf_path, json_path, summary, generated_at)
            VALUES (?, ?, ?, ?, ?)""",
         (job_id, pdf_path, json_path, summary, datetime.utcnow().isoformat(timespec="seconds")),
     )

@@ -8,9 +8,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import db
+from .ai.cover_letter import write_cover_letter
 from .ai.match_score import score_job
 from .ai.tailor_resume import tailor_resume
-from .pdf.render import render_resume
+from .pdf.render import render_cover_letter, render_resume
 from .scrapers.remotive import RemotiveScraper
 from .scrapers.working_nomads import WorkingNomadsScraper
 from .title_filter import matches_target
@@ -175,6 +176,58 @@ def _resume_cell_html(job_id: int, summary: str) -> str:
         f'hx-target="closest .resume-cell" hx-swap="innerHTML" '
         f'hx-indicator="#spin">Regenerate</button>'
         f"{summary_html}"
+    )
+
+
+def _cover_letter_cell_html(job_id: int, summary: str) -> str:
+    summary_html = f'<div class="reason">{summary}</div>' if summary else ""
+    return (
+        f'<a href="/jobs/{job_id}/cover-letter.pdf" target="_blank" '
+        f'class="pdf-link">Download PDF</a> '
+        f'<button class="btn-link" hx-post="/jobs/{job_id}/cover-letter" '
+        f'hx-target="closest .cover-cell" hx-swap="innerHTML" '
+        f'hx-indicator="#spin">Regenerate</button>'
+        f"{summary_html}"
+    )
+
+
+@app.post("/jobs/{job_id}/cover-letter", response_class=HTMLResponse)
+def generate_cover_letter(job_id: int):
+    """Tailor + render a cover letter PDF for one job."""
+    with db.connect() as conn:
+        job_row = db.get_job_for_tailoring(conn, job_id)
+        if not job_row:
+            raise HTTPException(404, f"job {job_id} not found")
+        job = dict(job_row)
+
+    try:
+        letter = write_cover_letter(job)
+    except Exception as e:
+        return HTMLResponse(
+            f'<span class="placeholder" style="color:#a00">error: {str(e)[:120]}</span>'
+        )
+
+    out_dir = GENERATED_DIR / str(job_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = out_dir / "cover_letter.pdf"
+    json_path = out_dir / "cover_letter.json"
+    render_cover_letter(letter, pdf_path)
+    json_path.write_text(json.dumps(letter, indent=2), encoding="utf-8")
+    summary = letter.get("tailoring_notes", "")
+
+    with db.connect() as conn:
+        db.save_cover_letter(conn, job_id, str(pdf_path), str(json_path), summary)
+
+    return HTMLResponse(_cover_letter_cell_html(job_id, summary))
+
+
+@app.get("/jobs/{job_id}/cover-letter.pdf")
+def download_cover_letter(job_id: int):
+    pdf_path = GENERATED_DIR / str(job_id) / "cover_letter.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(404, "cover letter not generated yet")
+    return FileResponse(
+        pdf_path, media_type="application/pdf", filename=f"anmol_cover_letter_{job_id}.pdf"
     )
 
 
