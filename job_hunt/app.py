@@ -57,17 +57,45 @@ app = FastAPI(title="Anmol Job Hunt 2026", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
+def _filters_from_query(
+    status: str | None, source: str | None, min_score: str | None, q: str | None
+) -> dict:
+    """Normalize raw query strings into list_jobs kwargs."""
+    out = {
+        "status": status or None,
+        "source": source or None,
+        "min_score": int(min_score) if (min_score and min_score.isdigit()) else None,
+        "query": (q or "").strip() or None,
+    }
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request):
+def dashboard(
+    request: Request,
+    status: str | None = None,
+    source: str | None = None,
+    min_score: str | None = None,
+    q: str | None = None,
+):
+    filters = _filters_from_query(status, source, min_score, q)
     with db.connect() as conn:
-        rows = db.list_jobs(conn)
+        rows = db.list_jobs(conn, **filters)
+        sources = db.distinct_sources(conn)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "rows": rows,
             "statuses": sorted(db.VALID_STATUSES),
+            "sources": sources,
             "roles": TARGET_ROLES,
+            "filters": {
+                "status": status or "",
+                "source": source or "",
+                "min_score": min_score or "",
+                "q": q or "",
+            },
         },
     )
 

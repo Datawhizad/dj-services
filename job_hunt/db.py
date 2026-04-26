@@ -118,22 +118,55 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> tuple[int, bool]:
     return job_id, True
 
 
-def list_jobs(conn: sqlite3.Connection, limit: int = 200) -> list[sqlite3.Row]:
+def list_jobs(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    source: str | None = None,
+    min_score: int | None = None,
+    query: str | None = None,
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    where: list[str] = []
+    args: list = []
+    if status:
+        where.append("COALESCE(a.status, 'not_applied') = ?")
+        args.append(status)
+    if source:
+        where.append("j.source = ?")
+        args.append(source)
+    if min_score is not None:
+        where.append("j.match_score >= ?")
+        args.append(min_score)
+    if query:
+        where.append("(j.title LIKE ? OR j.company LIKE ?)")
+        like = f"%{query}%"
+        args.extend([like, like])
+
+    sql = """SELECT j.id, j.source, j.title, j.company, j.location, j.url,
+                    j.posted_at, j.scraped_at, j.match_score, j.match_reason,
+                    a.status,
+                    r.pdf_path AS resume_pdf,
+                    c.pdf_path AS cover_letter_pdf
+             FROM jobs j
+             LEFT JOIN applications a ON a.job_id = j.id
+             LEFT JOIN resume_versions r ON r.job_id = j.id
+             LEFT JOIN cover_letters c ON c.job_id = j.id"""
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     # Sort: scored jobs first (highest score), then unscored by recency.
-    return conn.execute(
-        """SELECT j.id, j.source, j.title, j.company, j.location, j.url,
-                  j.posted_at, j.scraped_at, j.match_score, j.match_reason,
-                  a.status,
-                  r.pdf_path AS resume_pdf,
-                  c.pdf_path AS cover_letter_pdf
-           FROM jobs j
-           LEFT JOIN applications a ON a.job_id = j.id
-           LEFT JOIN resume_versions r ON r.job_id = j.id
-           LEFT JOIN cover_letters c ON c.job_id = j.id
-           ORDER BY (j.match_score IS NULL), j.match_score DESC, j.scraped_at DESC
-           LIMIT ?""",
-        (limit,),
-    ).fetchall()
+    sql += " ORDER BY (j.match_score IS NULL), j.match_score DESC, j.scraped_at DESC LIMIT ?"
+    args.append(limit)
+    return conn.execute(sql, args).fetchall()
+
+
+def distinct_sources(conn: sqlite3.Connection) -> list[str]:
+    return [
+        r["source"]
+        for r in conn.execute(
+            "SELECT DISTINCT source FROM jobs ORDER BY source"
+        ).fetchall()
+    ]
 
 
 def get_job_for_tailoring(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:

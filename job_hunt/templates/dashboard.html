@@ -47,6 +47,18 @@
                 font-size: 11px; cursor: pointer; border-radius: 4px; margin-left: 4px; }
     .btn-link:hover { background: #f0f0f0; }
     .resume-cell, .cover-cell { min-width: 180px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+               background: white; padding: 10px 14px; border-radius: 6px;
+               box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 14px; }
+    .filters label { font-size: 11px; color: #555; display: flex; flex-direction: column;
+                     gap: 2px; }
+    .filters input, .filters select { padding: 4px 6px; font-size: 13px; border: 1px solid #ccc;
+                                       border-radius: 4px; }
+    .filters input[type=text] { width: 200px; }
+    .filters input[type=number] { width: 70px; }
+    .filters .clear { font-size: 11px; color: #999; text-decoration: none; }
+    .filters .clear:hover { color: #333; }
+    .results-count { font-size: 12px; color: #666; margin-left: auto; }
   </style>
 </head>
 <body>
@@ -62,6 +74,38 @@
     <span id="spin" class="htmx-indicator">working…</span>
     {% if flash %}<span class="flash">{{ flash }}</span>{% endif %}
   </div>
+
+  <form class="filters"
+        hx-get="/" hx-target="body" hx-swap="outerHTML" hx-push-url="true"
+        hx-trigger="change, keyup delay:400ms from:input[type=text]">
+    <label>Status
+      <select name="status">
+        <option value="">all</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Source
+      <select name="source">
+        <option value="">all</option>
+        {% for s in sources %}
+          <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Min match
+      <input type="number" name="min_score" min="0" max="100" step="5"
+             value="{{ filters.min_score }}" placeholder="0">
+    </label>
+    <label>Search title / company
+      <input type="text" name="q" value="{{ filters.q }}" placeholder="e.g. analyst, KPMG">
+    </label>
+    {% if filters.status or filters.source or filters.min_score or filters.q %}
+      <a href="/" class="clear">clear filters</a>
+    {% endif %}
+    <span class="results-count">{{ rows|length }} jobs</span>
+  </form>
 
   {% if rows %}
   <table>
