@@ -13,7 +13,11 @@ from .ai.match_score import score_job
 from .ai.tailor_resume import tailor_resume
 from .pdf.docx_render import render_cover_letter_docx, render_resume_docx
 from .pdf.render import _sender_from_master_resume, render_cover_letter, render_resume
+from .scrapers.ashby import AshbyScraper
+from .scrapers.greenhouse import GreenhouseScraper
 from .scrapers.himalayas import HimalayasScraper
+from .scrapers.jobspresso import JobspressoScraper
+from .scrapers.lever import LeverScraper
 from .scrapers.remoteok import RemoteOKScraper
 from .scrapers.remotive import RemotiveScraper
 from .scrapers.working_nomads import WorkingNomadsScraper
@@ -48,10 +52,16 @@ TARGET_ROLES = [
 ]
 
 SCRAPERS = [
+    # Aggregators with keyword search
     RemotiveScraper(),
     WorkingNomadsScraper(),
     RemoteOKScraper(),
     HimalayasScraper(),
+    # Bulk-mode (no keyword search — fetched once per refresh)
+    JobspressoScraper(),
+    GreenhouseScraper(),
+    LeverScraper(),
+    AshbyScraper(),
 ]
 
 
@@ -124,11 +134,12 @@ def refresh(request: Request):
     with db.connect() as conn:
         pruned_count = db.prune_stale_unmatched(conn, matches_target)
         for scraper in SCRAPERS:
-            for role in TARGET_ROLES:
+            queries = [""] if scraper.bulk_mode else TARGET_ROLES
+            for role in queries:
                 try:
                     jobs = scraper.fetch(role)
                 except Exception as e:
-                    errors.append(f"{scraper.name}/{role}: {e}")
+                    errors.append(f"{scraper.name}/{role or 'all'}: {e}")
                     continue
                 for job in jobs:
                     if not matches_target(job.get("title")):
