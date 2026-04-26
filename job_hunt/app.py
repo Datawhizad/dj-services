@@ -11,7 +11,8 @@ from . import db
 from .ai.cover_letter import write_cover_letter
 from .ai.match_score import score_job
 from .ai.tailor_resume import tailor_resume
-from .pdf.render import render_cover_letter, render_resume
+from .pdf.docx_render import render_cover_letter_docx, render_resume_docx
+from .pdf.render import _sender_from_master_resume, render_cover_letter, render_resume
 from .scrapers.himalayas import HimalayasScraper
 from .scrapers.remoteok import RemoteOKScraper
 from .scrapers.remotive import RemotiveScraper
@@ -176,8 +177,10 @@ def generate_resume(job_id: int):
     out_dir = GENERATED_DIR / str(job_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = out_dir / "resume.pdf"
+    docx_path = out_dir / "resume.docx"
     json_path = out_dir / "resume.json"
     render_resume(tailored, pdf_path)
+    render_resume_docx(tailored, docx_path)
     json_path.write_text(json.dumps(tailored, indent=2), encoding="utf-8")
     summary = tailored.get("tailoring_notes", "")
 
@@ -195,17 +198,27 @@ def download_resume(job_id: int):
     return FileResponse(pdf_path, media_type="application/pdf", filename=f"anmol_resume_{job_id}.pdf")
 
 
+@app.get("/jobs/{job_id}/resume.docx")
+def download_resume_docx(job_id: int):
+    docx_path = GENERATED_DIR / str(job_id) / "resume.docx"
+    if not docx_path.exists():
+        raise HTTPException(404, "resume DOCX not generated yet")
+    return FileResponse(
+        docx_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"anmol_resume_{job_id}.docx",
+    )
+
+
 def _resume_cell_html(job_id: int, summary: str) -> str:
     """Cell content for a job that has a generated resume."""
-    summary_html = (
-        f'<div class="reason">{summary}</div>' if summary else ""
-    )
+    summary_html = f'<div class="reason">{summary}</div>' if summary else ""
     return (
-        f'<a href="/jobs/{job_id}/resume.pdf" target="_blank" '
-        f'class="pdf-link">Download PDF</a> '
+        f'<a href="/jobs/{job_id}/resume.pdf" target="_blank" class="pdf-link">PDF</a> '
+        f'<a href="/jobs/{job_id}/resume.docx" target="_blank" class="docx-link">DOCX</a> '
         f'<button class="btn-link" hx-post="/jobs/{job_id}/resume" '
         f'hx-target="closest .resume-cell" hx-swap="innerHTML" '
-        f'hx-indicator="#spin">Regenerate</button>'
+        f'hx-indicator="#spin">Regen</button>'
         f"{summary_html}"
     )
 
@@ -213,11 +226,11 @@ def _resume_cell_html(job_id: int, summary: str) -> str:
 def _cover_letter_cell_html(job_id: int, summary: str) -> str:
     summary_html = f'<div class="reason">{summary}</div>' if summary else ""
     return (
-        f'<a href="/jobs/{job_id}/cover-letter.pdf" target="_blank" '
-        f'class="pdf-link">Download PDF</a> '
+        f'<a href="/jobs/{job_id}/cover-letter.pdf" target="_blank" class="pdf-link">PDF</a> '
+        f'<a href="/jobs/{job_id}/cover-letter.docx" target="_blank" class="docx-link">DOCX</a> '
         f'<button class="btn-link" hx-post="/jobs/{job_id}/cover-letter" '
         f'hx-target="closest .cover-cell" hx-swap="innerHTML" '
-        f'hx-indicator="#spin">Regenerate</button>'
+        f'hx-indicator="#spin">Regen</button>'
         f"{summary_html}"
     )
 
@@ -241,8 +254,11 @@ def generate_cover_letter(job_id: int):
     out_dir = GENERATED_DIR / str(job_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = out_dir / "cover_letter.pdf"
+    docx_path = out_dir / "cover_letter.docx"
     json_path = out_dir / "cover_letter.json"
     render_cover_letter(letter, pdf_path)
+    sender_name, sender_contact = _sender_from_master_resume()
+    render_cover_letter_docx(letter, docx_path, sender_name, sender_contact)
     json_path.write_text(json.dumps(letter, indent=2), encoding="utf-8")
     summary = letter.get("tailoring_notes", "")
 
@@ -259,6 +275,18 @@ def download_cover_letter(job_id: int):
         raise HTTPException(404, "cover letter not generated yet")
     return FileResponse(
         pdf_path, media_type="application/pdf", filename=f"anmol_cover_letter_{job_id}.pdf"
+    )
+
+
+@app.get("/jobs/{job_id}/cover-letter.docx")
+def download_cover_letter_docx(job_id: int):
+    docx_path = GENERATED_DIR / str(job_id) / "cover_letter.docx"
+    if not docx_path.exists():
+        raise HTTPException(404, "cover letter DOCX not generated yet")
+    return FileResponse(
+        docx_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"anmol_cover_letter_{job_id}.docx",
     )
 
 
