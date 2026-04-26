@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS applications (
     notes TEXT,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS resume_versions (
+    job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+    pdf_path TEXT,
+    json_path TEXT,
+    summary TEXT,
+    generated_at TEXT NOT NULL
+);
 """
 
 INDEXES = """
@@ -106,13 +114,32 @@ def list_jobs(conn: sqlite3.Connection, limit: int = 200) -> list[sqlite3.Row]:
     # Sort: scored jobs first (highest score), then unscored by recency.
     return conn.execute(
         """SELECT j.id, j.source, j.title, j.company, j.location, j.url,
-                  j.posted_at, j.scraped_at, j.match_score, j.match_reason, a.status
+                  j.posted_at, j.scraped_at, j.match_score, j.match_reason,
+                  a.status, r.pdf_path AS resume_pdf
            FROM jobs j
            LEFT JOIN applications a ON a.job_id = j.id
+           LEFT JOIN resume_versions r ON r.job_id = j.id
            ORDER BY (j.match_score IS NULL), j.match_score DESC, j.scraped_at DESC
            LIMIT ?""",
         (limit,),
     ).fetchall()
+
+
+def get_job_for_tailoring(conn: sqlite3.Connection, job_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id, title, company, location, description, url FROM jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+
+
+def save_resume_version(
+    conn: sqlite3.Connection, job_id: int, pdf_path: str, json_path: str, summary: str
+) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO resume_versions (job_id, pdf_path, json_path, summary, generated_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (job_id, pdf_path, json_path, summary, datetime.utcnow().isoformat(timespec="seconds")),
+    )
 
 
 def get_unscored_jobs(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:

@@ -1,18 +1,23 @@
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import db
 from .ai.match_score import score_job
+from .ai.tailor_resume import tailor_resume
+from .pdf.render import render_resume
 from .scrapers.remotive import RemotiveScraper
 from .scrapers.working_nomads import WorkingNomadsScraper
 from .title_filter import matches_target
 
 ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT.parent / "data"
+GENERATED_DIR = DATA_DIR / "generated"
 templates = Jinja2Templates(directory=ROOT / "templates")
 templates.env.cache = None  # workaround: Jinja2 LRUCache fails on Python 3.14
 
@@ -118,6 +123,59 @@ def set_status(job_id: int, status: str = Form(...)):
     with db.connect() as conn:
         db.update_status(conn, job_id, status)
     return HTMLResponse(f'<span class="status status-{status}">{status}</span>')
+
+
+@app.post("/jobs/{job_id}/resume", response_class=HTMLResponse)
+def generate_resume(job_id: int):
+    """Tailor + render a resume PDF for one job. Returns updated cell HTML."""
+    with db.connect() as conn:
+        job_row = db.get_job_for_tailoring(conn, job_id)
+        if not job_row:
+            raise HTTPException(404, f"job {job_id} not found")
+        job = dict(job_row)
+
+    try:
+        tailored = tailor_resume(job)
+    except Exception as e:
+        return HTMLResponse(
+            f'<span class="placeholder" style="color:#a00">error: {str(e)[:120]}</span>'
+        )
+
+    out_dir = GENERATED_DIR / str(job_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = out_dir / "resume.pdf"
+    json_path = out_dir / "resume.json"
+    render_resume(tailored, pdf_path)
+    json_path.write_text(json.dumps(tailored, indent=2), encoding="utf-8")
+    summary = tailored.get("tailoring_notes", "")
+
+    with db.connect() as conn:
+        db.save_resume_version(conn, job_id, str(pdf_path), str(json_path), summary)
+
+    return HTMLResponse(_resume_cell_html(job_id, summary))
+
+
+@app.get("/jobs/{job_id}/resume.pdf")
+def download_resume(job_id: int):
+    pdf_path = GENERATED_DIR / str(job_id) / "resume.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(404, "resume not generated yet")
+    return FileResponse(pdf_path, media_type="application/pdf", filename=f"anmol_resume_{job_id}.pdf")
+
+
+def _resume_cell_html(job_id: int, summary: str) -> str:
+    """Cell content for a job that has a generated resume."""
+    summary_html = (
+        f'<div class="reason">{summary}</div>' if summary else ""
+    )
+    return (
+        f'<a href="/jobs/{job_id}/resume.pdf" target="_blank" '
+        f'class="pdf-link">Download PDF</a> '
+        f'<button class="btn-link" hx-post="/jobs/{job_id}/resume" '
+        f'hx-target="closest .resume-cell" hx-swap="innerHTML" '
+        f'hx-indicator="#spin">Regenerate</button>'
+        f"{summary_html}"
+    )
 
 
 @app.post("/score-all", response_class=HTMLResponse)

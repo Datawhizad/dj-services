@@ -40,6 +40,13 @@
     .score-low  { background: #f8d7da; color: #721c24; }
     .score-none { background: #eee; color: #888; font-weight: 500; }
     .reason { color: #666; font-size: 11px; margin-top: 2px; max-width: 240px; }
+    .pdf-link { display: inline-block; padding: 3px 10px; background: #2d6cdf; color: white;
+                border-radius: 4px; font-size: 12px; }
+    .pdf-link:hover { background: #1f55b8; text-decoration: none; }
+    .btn-link { background: none; border: 1px solid #ccc; color: #555; padding: 2px 8px;
+                font-size: 11px; cursor: pointer; border-radius: 4px; margin-left: 4px; }
+    .btn-link:hover { background: #f0f0f0; }
+    .resume-cell { min-width: 180px; }
   </style>
 </head>
 <body>
@@ -85,7 +92,18 @@
             {% if r.match_reason %}<div class="reason">{{ r.match_reason }}</div>{% endif %}
           {% endif %}
         </td>
-        <td><span class="placeholder">coming in milestone 3</span></td>
+        <td class="resume-cell">
+          {% if r.resume_pdf %}
+            <a href="/jobs/{{ r.id }}/resume.pdf" target="_blank" class="pdf-link">Download PDF</a>
+            <button class="btn-link" hx-post="/jobs/{{ r.id }}/resume"
+                    hx-target="closest .resume-cell" hx-swap="innerHTML"
+                    hx-indicator="#spin">Regenerate</button>
+          {% else %}
+            <button class="btn-link" hx-post="/jobs/{{ r.id }}/resume"
+                    hx-target="closest .resume-cell" hx-swap="innerHTML"
+                    hx-indicator="#spin">Generate</button>
+          {% endif %}
+        </td>
         <td><span class="placeholder">coming in milestone 4</span></td>
         <td>
           <select name="status"
