@@ -9,6 +9,8 @@ from fastapi.templating import Jinja2Templates
 from . import db
 from .ai.match_score import score_job
 from .scrapers.remotive import RemotiveScraper
+from .scrapers.working_nomads import WorkingNomadsScraper
+from .title_filter import matches_target
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=ROOT / "templates")
@@ -16,6 +18,7 @@ templates.env.cache = None  # workaround: Jinja2 LRUCache fails on Python 3.14
 
 TARGET_ROLES = [
     "Data Analyst",
+    "Data Scientist",
     "Product Analyst",
     "Business Intelligence Analyst",
     "Insights Analyst",
@@ -28,9 +31,14 @@ TARGET_ROLES = [
     "Growth Analyst",
     "MIS Analyst",
     "Analytics Consultant",
+    # Internships and entry-level
+    "Data Analyst Intern",
+    "Data Science Intern",
+    "Analytics Intern",
+    "Business Intelligence Intern",
 ]
 
-SCRAPERS = [RemotiveScraper()]
+SCRAPERS = [RemotiveScraper(), WorkingNomadsScraper()]
 
 
 @asynccontextmanager
@@ -62,8 +70,10 @@ def dashboard(request: Request):
 def refresh(request: Request):
     new_count = 0
     seen_count = 0
+    filtered_count = 0
     errors: list[str] = []
     with db.connect() as conn:
+        pruned_count = db.prune_stale_unmatched(conn, matches_target)
         for scraper in SCRAPERS:
             for role in TARGET_ROLES:
                 try:
@@ -72,6 +82,9 @@ def refresh(request: Request):
                     errors.append(f"{scraper.name}/{role}: {e}")
                     continue
                 for job in jobs:
+                    if not matches_target(job.get("title")):
+                        filtered_count += 1
+                        continue
                     _, is_new = db.upsert_job(conn, job)
                     if is_new:
                         new_count += 1
@@ -79,6 +92,13 @@ def refresh(request: Request):
                         seen_count += 1
         rows = db.list_jobs(conn)
 
+    flash = (
+        f"Refreshed: {new_count} new, {seen_count} already seen, "
+        f"{filtered_count} filtered out by title, "
+        f"{pruned_count} stale rows pruned"
+    )
+    if errors:
+        flash += f" ({len(errors)} errors)"
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -86,8 +106,7 @@ def refresh(request: Request):
             "rows": rows,
             "statuses": sorted(db.VALID_STATUSES),
             "roles": TARGET_ROLES,
-            "flash": f"Refreshed: {new_count} new, {seen_count} already seen"
-            + (f" ({len(errors)} errors)" if errors else ""),
+            "flash": flash,
         },
     )
 

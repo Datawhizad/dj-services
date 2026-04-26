@@ -133,6 +133,23 @@ def set_match_score(conn: sqlite3.Connection, job_id: int, score: int, reason: s
     )
 
 
+def prune_stale_unmatched(conn: sqlite3.Connection, title_predicate) -> int:
+    """Delete jobs the user has not engaged with whose title no longer matches.
+    Only removes rows where match_score IS NULL AND application status = 'not_applied'.
+    Returns count deleted."""
+    rows = conn.execute(
+        """SELECT j.id, j.title FROM jobs j
+           LEFT JOIN applications a ON a.job_id = j.id
+           WHERE j.match_score IS NULL
+             AND (a.status IS NULL OR a.status = 'not_applied')"""
+    ).fetchall()
+    to_delete = [r["id"] for r in rows if not title_predicate(r["title"])]
+    if to_delete:
+        placeholders = ",".join("?" for _ in to_delete)
+        conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", to_delete)
+    return len(to_delete)
+
+
 def update_status(conn: sqlite3.Connection, job_id: int, status: str) -> None:
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status}")
