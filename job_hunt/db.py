@@ -5,7 +5,7 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "jobs.db"
 
-SCHEMA = """
+TABLES = """
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     description TEXT,
     posted_at TEXT,
     scraped_at TEXT NOT NULL,
+    match_score INTEGER,
+    match_reason TEXT,
     UNIQUE(source, source_job_id)
 );
 
@@ -26,18 +28,31 @@ CREATE TABLE IF NOT EXISTS applications (
     notes TEXT,
     updated_at TEXT NOT NULL
 );
+"""
 
+INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_jobs_scraped_at ON jobs(scraped_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
+CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC);
 """
 
 VALID_STATUSES = {"not_applied", "applied", "interview", "rejected", "offer"}
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
-        conn.executescript(SCHEMA)
+        conn.executescript(TABLES)
+        # migrate existing DBs that pre-date milestone 2
+        _add_column_if_missing(conn, "jobs", "match_score", "match_score INTEGER")
+        _add_column_if_missing(conn, "jobs", "match_reason", "match_reason TEXT")
+        conn.executescript(INDEXES)
 
 
 @contextmanager
@@ -88,15 +103,34 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> tuple[int, bool]:
 
 
 def list_jobs(conn: sqlite3.Connection, limit: int = 200) -> list[sqlite3.Row]:
+    # Sort: scored jobs first (highest score), then unscored by recency.
     return conn.execute(
         """SELECT j.id, j.source, j.title, j.company, j.location, j.url,
-                  j.posted_at, j.scraped_at, a.status
+                  j.posted_at, j.scraped_at, j.match_score, j.match_reason, a.status
            FROM jobs j
            LEFT JOIN applications a ON a.job_id = j.id
-           ORDER BY j.scraped_at DESC
+           ORDER BY (j.match_score IS NULL), j.match_score DESC, j.scraped_at DESC
            LIMIT ?""",
         (limit,),
     ).fetchall()
+
+
+def get_unscored_jobs(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
+    return conn.execute(
+        """SELECT id, title, company, location, description
+           FROM jobs
+           WHERE match_score IS NULL
+           ORDER BY scraped_at DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+
+def set_match_score(conn: sqlite3.Connection, job_id: int, score: int, reason: str) -> None:
+    conn.execute(
+        "UPDATE jobs SET match_score = ?, match_reason = ? WHERE id = ?",
+        (score, reason, job_id),
+    )
 
 
 def update_status(conn: sqlite3.Connection, job_id: int, status: str) -> None:

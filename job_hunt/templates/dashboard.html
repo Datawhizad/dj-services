@@ -33,6 +33,13 @@
     .status-offer       { background: #cce5ff; color: #004085; }
     select { padding: 4px; font-size: 12px; }
     .empty { text-align: center; padding: 40px; color: #888; }
+    .score { display: inline-block; min-width: 32px; padding: 3px 8px; border-radius: 10px;
+             font-weight: 700; font-size: 12px; text-align: center; }
+    .score-high { background: #d4edda; color: #155724; }
+    .score-mid  { background: #fff3cd; color: #856404; }
+    .score-low  { background: #f8d7da; color: #721c24; }
+    .score-none { background: #eee; color: #888; font-weight: 500; }
+    .reason { color: #666; font-size: 11px; margin-top: 2px; max-width: 240px; }
   </style>
 </head>
 <body>
@@ -40,7 +47,12 @@
   <div class="toolbar">
     <button hx-post="/refresh" hx-target="body" hx-swap="outerHTML"
             hx-indicator="#spin">Refresh jobs</button>
-    <span id="spin" class="htmx-indicator">refreshing…</span>
+    <button hx-post="/score-all" hx-target="body" hx-swap="outerHTML"
+            hx-indicator="#spin"
+            hx-confirm="Score all unscored jobs with Claude? This calls the Anthropic API for each.">
+      Score all
+    </button>
+    <span id="spin" class="htmx-indicator">working…</span>
     {% if flash %}<span class="flash">{{ flash }}</span>{% endif %}
   </div>
 
@@ -50,6 +62,7 @@
       <tr>
         <th>Job</th>
         <th>Source</th>
+        <th>Match</th>
         <th>Resume</th>
         <th>Cover Letter</th>
         <th>Status</th>
@@ -63,6 +76,15 @@
           <small>{{ r.company or '—' }} · {{ r.location or '—' }}</small>
         </td>
         <td><span class="source">{{ r.source }}</span></td>
+        <td>
+          {% if r.match_score is none %}
+            <span class="score score-none">—</span>
+          {% else %}
+            {% set cls = 'score-high' if r.match_score >= 65 else ('score-mid' if r.match_score >= 45 else 'score-low') %}
+            <span class="score {{ cls }}">{{ r.match_score }}</span>
+            {% if r.match_reason %}<div class="reason">{{ r.match_reason }}</div>{% endif %}
+          {% endif %}
+        </td>
         <td><span class="placeholder">coming in milestone 3</span></td>
         <td><span class="placeholder">coming in milestone 4</span></td>
         <td>

@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import db
+from .ai.match_score import score_job
 from .scrapers.remotive import RemotiveScraper
 
 ROOT = Path(__file__).resolve().parent
@@ -98,3 +99,36 @@ def set_status(job_id: int, status: str = Form(...)):
     with db.connect() as conn:
         db.update_status(conn, job_id, status)
     return HTMLResponse(f'<span class="status status-{status}">{status}</span>')
+
+
+@app.post("/score-all", response_class=HTMLResponse)
+def score_all(request: Request):
+    """Score all unscored jobs with Claude. Returns refreshed dashboard."""
+    scored = 0
+    errors: list[str] = []
+    with db.connect() as conn:
+        unscored = db.get_unscored_jobs(conn)
+        for row in unscored:
+            try:
+                score, reason = score_job(dict(row))
+                db.set_match_score(conn, row["id"], score, reason)
+                scored += 1
+            except Exception as e:
+                errors.append(f"job {row['id']}: {e}")
+                if len(errors) >= 3:
+                    break  # bail early on repeated failures (likely API key/quota)
+        rows = db.list_jobs(conn)
+
+    flash = f"Scored {scored} jobs"
+    if errors:
+        flash += f" — stopped after {len(errors)} errors. First: {errors[0]}"
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "rows": rows,
+            "statuses": sorted(db.VALID_STATUSES),
+            "roles": TARGET_ROLES,
+            "flash": flash,
+        },
+    )
