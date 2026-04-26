@@ -158,6 +158,41 @@ def set_status(job_id: int, status: str = Form(...)):
     return HTMLResponse(f'<span class="status status-{status}">{status}</span>')
 
 
+def _generate_resume_for_job(job: dict) -> str:
+    """Tailor + render + persist resume for one job dict. Returns tailoring summary.
+    Raises on API/render failure."""
+    tailored = tailor_resume(job)
+    out_dir = GENERATED_DIR / str(job["id"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = out_dir / "resume.pdf"
+    docx_path = out_dir / "resume.docx"
+    json_path = out_dir / "resume.json"
+    render_resume(tailored, pdf_path)
+    render_resume_docx(tailored, docx_path)
+    json_path.write_text(json.dumps(tailored, indent=2), encoding="utf-8")
+    summary = tailored.get("tailoring_notes", "")
+    with db.connect() as conn:
+        db.save_resume_version(conn, job["id"], str(pdf_path), str(json_path), summary)
+    return summary
+
+
+def _generate_cover_letter_for_job(job: dict) -> str:
+    letter = write_cover_letter(job)
+    out_dir = GENERATED_DIR / str(job["id"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = out_dir / "cover_letter.pdf"
+    docx_path = out_dir / "cover_letter.docx"
+    json_path = out_dir / "cover_letter.json"
+    render_cover_letter(letter, pdf_path)
+    sender_name, sender_contact = _sender_from_master_resume()
+    render_cover_letter_docx(letter, docx_path, sender_name, sender_contact)
+    json_path.write_text(json.dumps(letter, indent=2), encoding="utf-8")
+    summary = letter.get("tailoring_notes", "")
+    with db.connect() as conn:
+        db.save_cover_letter(conn, job["id"], str(pdf_path), str(json_path), summary)
+    return summary
+
+
 @app.post("/jobs/{job_id}/resume", response_class=HTMLResponse)
 def generate_resume(job_id: int):
     """Tailor + render a resume PDF for one job. Returns updated cell HTML."""
@@ -168,25 +203,11 @@ def generate_resume(job_id: int):
         job = dict(job_row)
 
     try:
-        tailored = tailor_resume(job)
+        summary = _generate_resume_for_job(job)
     except Exception as e:
         return HTMLResponse(
             f'<span class="placeholder" style="color:#a00">error: {str(e)[:120]}</span>'
         )
-
-    out_dir = GENERATED_DIR / str(job_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = out_dir / "resume.pdf"
-    docx_path = out_dir / "resume.docx"
-    json_path = out_dir / "resume.json"
-    render_resume(tailored, pdf_path)
-    render_resume_docx(tailored, docx_path)
-    json_path.write_text(json.dumps(tailored, indent=2), encoding="utf-8")
-    summary = tailored.get("tailoring_notes", "")
-
-    with db.connect() as conn:
-        db.save_resume_version(conn, job_id, str(pdf_path), str(json_path), summary)
-
     return HTMLResponse(_resume_cell_html(job_id, summary))
 
 
@@ -243,28 +264,12 @@ def generate_cover_letter(job_id: int):
         if not job_row:
             raise HTTPException(404, f"job {job_id} not found")
         job = dict(job_row)
-
     try:
-        letter = write_cover_letter(job)
+        summary = _generate_cover_letter_for_job(job)
     except Exception as e:
         return HTMLResponse(
             f'<span class="placeholder" style="color:#a00">error: {str(e)[:120]}</span>'
         )
-
-    out_dir = GENERATED_DIR / str(job_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = out_dir / "cover_letter.pdf"
-    docx_path = out_dir / "cover_letter.docx"
-    json_path = out_dir / "cover_letter.json"
-    render_cover_letter(letter, pdf_path)
-    sender_name, sender_contact = _sender_from_master_resume()
-    render_cover_letter_docx(letter, docx_path, sender_name, sender_contact)
-    json_path.write_text(json.dumps(letter, indent=2), encoding="utf-8")
-    summary = letter.get("tailoring_notes", "")
-
-    with db.connect() as conn:
-        db.save_cover_letter(conn, job_id, str(pdf_path), str(json_path), summary)
-
     return HTMLResponse(_cover_letter_cell_html(job_id, summary))
 
 
@@ -287,6 +292,86 @@ def download_cover_letter_docx(job_id: int):
         docx_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"anmol_cover_letter_{job_id}.docx",
+    )
+
+
+BULK_MAX = 15  # cap per single sync request to avoid HTTP timeout
+
+
+def _bulk_generate(
+    request: Request,
+    *,
+    kind: str,
+    status: str | None,
+    source: str | None,
+    min_score: str | None,
+    q: str | None,
+):
+    """Iterate filtered rows, generate the missing artifact (kind='resume' or
+    'cover-letter'), respect BULK_MAX cap. Returns refreshed dashboard."""
+    filters = _filters_from_query(status, source, min_score, q)
+    with db.connect() as conn:
+        rows = db.list_jobs(conn, **filters)
+
+    if kind == "resume":
+        candidates = [r for r in rows if not r["resume_pdf"]]
+        gen_one = _generate_resume_for_job
+        kind_label = "resumes"
+    else:
+        candidates = [r for r in rows if not r["cover_letter_pdf"]]
+        gen_one = _generate_cover_letter_for_job
+        kind_label = "cover letters"
+
+    skipped_already_done = len(rows) - len(candidates)
+    batch = candidates[:BULK_MAX]
+    deferred = max(0, len(candidates) - BULK_MAX)
+
+    generated = 0
+    errors: list[str] = []
+    for r in batch:
+        try:
+            with db.connect() as conn:
+                job_row = db.get_job_for_tailoring(conn, r["id"])
+            gen_one(dict(job_row))
+            generated += 1
+        except Exception as e:
+            errors.append(f"job {r['id']}: {e}")
+            if len(errors) >= 3:
+                break
+
+    flash = f"Generated {generated} {kind_label} ({skipped_already_done} already done)"
+    if deferred:
+        flash += f"; {deferred} more matched but capped at {BULK_MAX} per click — click again for the rest"
+    if errors:
+        flash += f" — stopped after {len(errors)} errors. First: {errors[0]}"
+
+    with db.connect() as conn:
+        return _render_dashboard(request, conn, flash=flash, filters=filters)
+
+
+@app.post("/bulk/resumes", response_class=HTMLResponse)
+def bulk_resumes(
+    request: Request,
+    status: str | None = None,
+    source: str | None = None,
+    min_score: str | None = None,
+    q: str | None = None,
+):
+    return _bulk_generate(
+        request, kind="resume", status=status, source=source, min_score=min_score, q=q
+    )
+
+
+@app.post("/bulk/cover-letters", response_class=HTMLResponse)
+def bulk_cover_letters(
+    request: Request,
+    status: str | None = None,
+    source: str | None = None,
+    min_score: str | None = None,
+    q: str | None = None,
+):
+    return _bulk_generate(
+        request, kind="cover-letter", status=status, source=source, min_score=min_score, q=q
     )
 
 
