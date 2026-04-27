@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,14 +14,18 @@ from .ai.match_score import score_job
 from .ai.tailor_resume import tailor_resume
 from .pdf.docx_render import render_cover_letter_docx, render_resume_docx
 from .pdf.render import _sender_from_master_resume, render_cover_letter, render_resume
+from .scheduler import start_scheduler
 from .scrapers.ashby import AshbyScraper
 from .scrapers.greenhouse import GreenhouseScraper
 from .scrapers.himalayas import HimalayasScraper
+from .scrapers.hn_who_is_hiring import HNWhoIsHiringScraper
 from .scrapers.jobspresso import JobspressoScraper
 from .scrapers.lever import LeverScraper
 from .scrapers.remoteok import RemoteOKScraper
 from .scrapers.remotive import RemotiveScraper
+from .scrapers.smartrecruiters import SmartRecruitersScraper
 from .scrapers.working_nomads import WorkingNomadsScraper
+from .scrapers.wwr import WeWorkRemotelyScraper
 from .title_filter import matches_target
 
 ROOT = Path(__file__).resolve().parent
@@ -59,40 +64,83 @@ SCRAPERS = [
     HimalayasScraper(),
     # Bulk-mode (no keyword search — fetched once per refresh)
     JobspressoScraper(),
+    WeWorkRemotelyScraper(),
+    HNWhoIsHiringScraper(),
     GreenhouseScraper(),
     LeverScraper(),
     AshbyScraper(),
+    SmartRecruitersScraper(),
 ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    yield
+    sched = start_scheduler(_do_refresh) if os.environ.get("DISABLE_SCHEDULER") != "1" else None
+    try:
+        yield
+    finally:
+        if sched is not None:
+            sched.shutdown(wait=False)
 
 
 app = FastAPI(title="Anmol Job Hunt 2026", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
+VALID_LOCATIONS = {"austin", "remote", "us", "anywhere"}
+
+# Default seniority filter: hide senior+ roles since Anmol has ~14 months exp.
+# User can flip to {"all"} via the UI.
+DEFAULT_SENIORITY = ["intern", "entry", "mid"]
+
+
+def _parse_seniority(raw: str | None) -> list[str] | None:
+    """Accepts a comma-separated string ('intern,entry,mid'), the magic value
+    'all', or None (which means use DEFAULT_SENIORITY)."""
+    if raw is None:
+        return list(DEFAULT_SENIORITY)
+    if raw == "all" or raw == "":
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return parts or list(DEFAULT_SENIORITY)
+
+
 def _filters_from_query(
-    status: str | None, source: str | None, min_score: str | None, q: str | None
+    status: str | None,
+    source: str | None,
+    min_score: str | None,
+    q: str | None,
+    location: str | None = None,
+    archived: str | None = None,
+    seniority: str | None = None,
 ) -> dict:
     """Normalize raw query strings into list_jobs kwargs."""
-    out = {
+    return {
         "status": status or None,
         "source": source or None,
         "min_score": int(min_score) if (min_score and min_score.isdigit()) else None,
         "query": (q or "").strip() or None,
+        "location": location if location in VALID_LOCATIONS else None,
+        "seniority": _parse_seniority(seniority),
+        "include_archived": (archived == "1"),
     }
-    return out
 
 
 def _render_dashboard(request: Request, conn, *, flash: str | None = None, filters: dict | None = None):
     if filters is None:
-        filters = {"status": None, "source": None, "min_score": None, "query": None}
+        filters = {
+            "status": None, "source": None, "min_score": None, "query": None,
+            "location": None, "seniority": list(DEFAULT_SENIORITY), "include_archived": False,
+        }
     rows = db.list_jobs(conn, **filters)
     sources = db.distinct_sources(conn)
+    health = db.latest_per_source(conn)
+    seniority_value = filters.get("seniority")
+    if seniority_value is None:
+        seniority_str = "all"
+    else:
+        seniority_str = ",".join(seniority_value)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -106,7 +154,11 @@ def _render_dashboard(request: Request, conn, *, flash: str | None = None, filte
                 "source": filters.get("source") or "",
                 "min_score": filters.get("min_score") if filters.get("min_score") is not None else "",
                 "q": filters.get("query") or "",
+                "location": filters.get("location") or "",
+                "seniority": seniority_str,
+                "archived": "1" if filters.get("include_archived") else "",
             },
+            "health": health,
             "flash": flash,
         },
     )
@@ -119,45 +171,99 @@ def dashboard(
     source: str | None = None,
     min_score: str | None = None,
     q: str | None = None,
+    location: str | None = None,
+    archived: str | None = None,
+    seniority: str | None = None,
 ):
-    filters = _filters_from_query(status, source, min_score, q)
+    filters = _filters_from_query(status, source, min_score, q, location, archived, seniority)
     with db.connect() as conn:
         return _render_dashboard(request, conn, filters=filters)
 
 
-@app.post("/refresh", response_class=HTMLResponse)
-def refresh(request: Request):
-    new_count = 0
-    seen_count = 0
-    filtered_count = 0
-    errors: list[str] = []
+def _do_refresh(*, scrapers=SCRAPERS) -> dict:
+    """Run all scrapers, write per-source refresh_log rows, return summary dict.
+    Pure function — no Request, callable from both the HTTP route and the
+    APScheduler background job."""
+    totals = {"new": 0, "seen": 0, "filtered": 0, "pruned": 0, "errors": 0}
     with db.connect() as conn:
-        pruned_count = db.prune_stale_unmatched(conn, matches_target)
-        for scraper in SCRAPERS:
+        totals["pruned"] = db.prune_stale_unmatched(conn, matches_target)
+        for scraper in scrapers:
             queries = [""] if scraper.bulk_mode else TARGET_ROLES
+            log_id = db.start_refresh(conn, scraper.name)
+            new_c = seen_c = filt_c = err_c = 0
+            err_first: str | None = None
             for role in queries:
                 try:
                     jobs = scraper.fetch(role)
                 except Exception as e:
-                    errors.append(f"{scraper.name}/{role or 'all'}: {e}")
+                    err_c += 1
+                    if err_first is None:
+                        err_first = f"{role or 'all'}: {e}"[:300]
                     continue
                 for job in jobs:
                     if not matches_target(job.get("title")):
-                        filtered_count += 1
+                        filt_c += 1
                         continue
                     _, is_new = db.upsert_job(conn, job)
                     if is_new:
-                        new_count += 1
+                        new_c += 1
                     else:
-                        seen_count += 1
-        flash = (
-            f"Refreshed: {new_count} new, {seen_count} already seen, "
-            f"{filtered_count} filtered out by title, "
-            f"{pruned_count} stale rows pruned"
-        )
-        if errors:
-            flash += f" ({len(errors)} errors)"
+                        seen_c += 1
+            db.finish_refresh(
+                conn, log_id,
+                new_count=new_c, seen_count=seen_c,
+                filtered_count=filt_c, error_count=err_c,
+                error_first=err_first,
+            )
+            totals["new"] += new_c
+            totals["seen"] += seen_c
+            totals["filtered"] += filt_c
+            totals["errors"] += err_c
+        # opportunistic auto-archive after each refresh
+        totals["archived"] = db.auto_archive(conn)
+    return totals
+
+
+@app.post("/refresh", response_class=HTMLResponse)
+def refresh(request: Request):
+    t = _do_refresh()
+    flash = (
+        f"Refreshed: {t['new']} new, {t['seen']} already seen, "
+        f"{t['filtered']} filtered out by title, {t['pruned']} stale rows pruned, "
+        f"{t.get('archived', 0)} auto-archived"
+    )
+    if t["errors"]:
+        flash += f" ({t['errors']} scraper errors — see Source health panel)"
+    with db.connect() as conn:
         return _render_dashboard(request, conn, flash=flash)
+
+
+@app.get("/source-health", response_class=HTMLResponse)
+def source_health(request: Request):
+    """Returns just the source-health fragment, for HTMX polling."""
+    with db.connect() as conn:
+        health = db.latest_per_source(conn)
+    return templates.TemplateResponse(
+        request, "_source_health.html", {"health": health}
+    )
+
+
+@app.get("/jobs/{job_id}/jd", response_class=HTMLResponse)
+def job_drawer(request: Request, job_id: int):
+    """Returns the right-side drawer with the full JD for one job."""
+    with db.connect() as conn:
+        job = db.get_job_full(conn, job_id)
+    if not job:
+        raise HTTPException(404, f"job {job_id} not found")
+    return templates.TemplateResponse(request, "_drawer.html", {"job": job})
+
+
+@app.post("/jobs/{job_id}/archive", response_class=HTMLResponse)
+def archive_job(job_id: int, archived: str = Form("1")):
+    flag = archived == "1"
+    with db.connect() as conn:
+        db.set_archived(conn, job_id, flag)
+    return HTMLResponse("")  # row will be removed from view by HTMX swap
 
 
 @app.post("/jobs/{job_id}/status", response_class=HTMLResponse)
@@ -317,10 +423,13 @@ def _bulk_generate(
     source: str | None,
     min_score: str | None,
     q: str | None,
+    location: str | None = None,
+    archived: str | None = None,
+    seniority: str | None = None,
 ):
     """Iterate filtered rows, generate the missing artifact (kind='resume' or
     'cover-letter'), respect BULK_MAX cap. Returns refreshed dashboard."""
-    filters = _filters_from_query(status, source, min_score, q)
+    filters = _filters_from_query(status, source, min_score, q, location, archived, seniority)
     with db.connect() as conn:
         rows = db.list_jobs(conn, **filters)
 
@@ -367,9 +476,13 @@ def bulk_resumes(
     source: str | None = None,
     min_score: str | None = None,
     q: str | None = None,
+    location: str | None = None,
+    archived: str | None = None,
+    seniority: str | None = None,
 ):
     return _bulk_generate(
-        request, kind="resume", status=status, source=source, min_score=min_score, q=q
+        request, kind="resume", status=status, source=source, min_score=min_score, q=q,
+        location=location, archived=archived, seniority=seniority,
     )
 
 
@@ -380,9 +493,13 @@ def bulk_cover_letters(
     source: str | None = None,
     min_score: str | None = None,
     q: str | None = None,
+    location: str | None = None,
+    archived: str | None = None,
+    seniority: str | None = None,
 ):
     return _bulk_generate(
-        request, kind="cover-letter", status=status, source=source, min_score=min_score, q=q
+        request, kind="cover-letter", status=status, source=source, min_score=min_score, q=q,
+        location=location, archived=archived, seniority=seniority,
     )
 
 

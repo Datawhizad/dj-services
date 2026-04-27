@@ -6,10 +6,17 @@ URL = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
 # Verified-live Greenhouse boards (as of 2026-04). Companies on this list all
 # hire analysts/data folks. Edit freely — invalid slugs are silently skipped.
 SLUGS = [
+    # tech / SaaS
     "airbnb", "stripe", "figma", "vercel", "anthropic", "discord", "dropbox",
-    "pinterest", "reddit", "twilio", "asana", "gitlab", "mercury", "brex",
-    "coinbase", "robinhood", "chime", "datadog", "mongodb", "clickhouse",
-    "launchdarkly", "grafanalabs", "planetscale",
+    "pinterest", "reddit", "twilio", "asana", "gitlab", "brex", "mercury",
+    "datadog", "mongodb", "clickhouse", "launchdarkly", "grafanalabs",
+    "planetscale", "lattice", "gusto", "carta", "intercom", "airtable",
+    # data / AI / scale-ups
+    "databricks", "scaleai", "roblox", "roku", "samsara",
+    # fintech / payments
+    "affirm", "marqeta", "block", "coinbase", "robinhood", "chime",
+    # logistics / consumer
+    "instacart", "lyft", "flexport",
 ]
 
 

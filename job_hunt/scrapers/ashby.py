@@ -7,6 +7,8 @@ URL = "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=
 SLUGS = [
     "vanta", "harvey", "posthog", "cohere", "lovable", "browserbase",
     "elevenlabs", "modal", "linear", "cursor", "openai",
+    # newly verified additions
+    "ramp", "deel", "mercury", "retool", "whatnot",
 ]
 
 
