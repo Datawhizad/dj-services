@@ -1,0 +1,20 @@
+{% if not health %}
+  <p class="text-xs text-ink-400 italic mt-1">No refreshes yet. Click <kbd class="kbd">R</kbd> or wait for the scheduler.</p>
+{% else %}
+<ul class="space-y-1.5 text-xs">
+  {% for h in health %}
+    {% set bad = h.error_count and h.error_count > 0 %}
+    <li class="flex items-center justify-between gap-2"
+        title="started {{ h.started_at }}{% if h.error_first %}\nlast error: {{ h.error_first }}{% endif %}">
+      <span class="flex items-center gap-1.5 min-w-0">
+        <span class="w-1.5 h-1.5 rounded-full {% if bad %}bg-red-500{% else %}bg-emerald-500{% endif %} shrink-0"></span>
+        <span class="text-ink-700 dark:text-ink-200 truncate">{{ h.source.replace('_', ' ') }}</span>
+      </span>
+      <span class="font-mono tabular-nums text-ink-500 dark:text-ink-400 shrink-0">
+        +{{ h.new_count or 0 }}
+        {% if bad %}<span class="text-red-500">/ {{ h.error_count }}!</span>{% endif %}
+      </span>
+    </li>
+  {% endfor %}
+</ul>
+{% endif %}

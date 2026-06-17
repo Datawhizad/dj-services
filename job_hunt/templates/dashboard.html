@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en" x-data="dashboardShell()" x-init="init()" :class="{ 'dark': dark }">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Anmol Job Hunt 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            ink: { 50:'#f8fafc',100:'#f1f5f9',200:'#e2e8f0',300:'#cbd5e1',
+                   400:'#94a3b8',500:'#64748b',600:'#475569',700:'#334155',
+                   800:'#1e293b',900:'#0f172a',950:'#020617' },
+          },
+        },
+      },
+    }
+  </script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="font-sans antialiased text-ink-900 dark:text-ink-100 bg-ink-50 dark:bg-ink-950">
+
+  <!-- Top bar -->
+  <header class="sticky top-0 z-30 backdrop-blur bg-white/80 dark:bg-ink-950/80 border-b border-ink-200 dark:border-ink-800">
+    <div class="max-w-screen-2xl mx-auto px-6 h-14 flex items-center gap-4">
+      <div class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 grid place-items-center text-white font-bold text-sm">A</div>
+        <h1 class="text-[15px] font-semibold tracking-tight">Anmol Job Hunt 2026</h1>
+      </div>
+      <div class="flex-1"></div>
+
+      <button title="Refresh jobs (R)"
+              hx-post="/refresh" hx-target="body" hx-swap="outerHTML" hx-indicator="#spin"
+              class="btn-ghost"><i data-lucide="refresh-cw" class="w-4 h-4"></i><span>Refresh</span></button>
+
+      <button title="Score all unscored (S)"
+              hx-post="/score-all" hx-target="body" hx-swap="outerHTML" hx-indicator="#spin"
+              hx-confirm="Score all unscored jobs with Claude? This calls the Anthropic API for each."
+              class="btn-ghost"><i data-lucide="sparkles" class="w-4 h-4"></i><span>Score all</span></button>
+
+      <span id="spin" class="htmx-indicator text-xs text-ink-500 dark:text-ink-400 px-2">working…</span>
+
+      <button @click="toggleDark" title="Toggle dark mode" class="btn-icon">
+        <i x-show="!dark" data-lucide="moon" class="w-4 h-4"></i>
+        <i x-show="dark" data-lucide="sun" class="w-4 h-4" x-cloak></i>
+      </button>
+
+      <a href="https://github.com/Datawhizad/dj-services/pull/1" target="_blank" class="btn-icon" title="GitHub PR">
+        <i data-lucide="github" class="w-4 h-4"></i>
+      </a>
+    </div>
+    {% if flash %}
+    <div class="bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-900 text-emerald-900 dark:text-emerald-200 text-sm px-6 py-2">
+      <span class="font-medium">✓</span> {{ flash }}
+    </div>
+    {% endif %}
+  </header>
+
+  <div class="max-w-screen-2xl mx-auto px-6 py-6 grid grid-cols-12 gap-6">
+
+    <!-- Sidebar -->
+    <aside class="col-span-3 xl:col-span-2 space-y-5">
+      <form class="card" hx-get="/" hx-target="body" hx-swap="outerHTML" hx-push-url="true"
+            hx-trigger="change, keyup delay:400ms from:input[type=text]" autocomplete="off">
+        <h3 class="card-h">Filters</h3>
+
+        <label class="lbl">Status</label>
+        <select name="status" class="inp">
+          <option value="">All</option>
+          {% for s in statuses %}
+            <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
+          {% endfor %}
+        </select>
+
+        <label class="lbl mt-3">Source</label>
+        <select name="source" class="inp">
+          <option value="">All</option>
+          {% for s in sources %}
+            <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ s.replace('_', ' ') }}</option>
+          {% endfor %}
+        </select>
+
+        <label class="lbl mt-3">Location</label>
+        <select name="location" class="inp">
+          <option value="">Anywhere</option>
+          <option value="austin" {% if filters.location == 'austin' %}selected{% endif %}>Austin / TX</option>
+          <option value="remote" {% if filters.location == 'remote' %}selected{% endif %}>Remote</option>
+          <option value="us"     {% if filters.location == 'us'     %}selected{% endif %}>USA</option>
+        </select>
+
+        <label class="lbl mt-3">Seniority
+          <span class="text-ink-400 normal-case font-normal lowercase tracking-normal">— hides 5+ yr roles by default</span>
+        </label>
+        <select name="seniority" class="inp">
+          <option value="intern,entry,mid"   {% if filters.seniority == 'intern,entry,mid' %}selected{% endif %}>Beginner + mid (intern, entry, mid)</option>
+          <option value="intern,entry"       {% if filters.seniority == 'intern,entry' %}selected{% endif %}>Beginner only (intern + entry)</option>
+          <option value="intern"             {% if filters.seniority == 'intern' %}selected{% endif %}>Internships only</option>
+          <option value="entry"              {% if filters.seniority == 'entry' %}selected{% endif %}>Entry-level only</option>
+          <option value="mid"                {% if filters.seniority == 'mid' %}selected{% endif %}>Mid only</option>
+          <option value="senior"             {% if filters.seniority == 'senior' %}selected{% endif %}>Senior only</option>
+          <option value="all"                {% if filters.seniority == 'all' %}selected{% endif %}>All (include senior)</option>
+        </select>
+
+        <label class="lbl mt-3">Min match score</label>
+        <input type="number" name="min_score" min="0" max="100" step="5"
+               value="{{ filters.min_score }}" placeholder="0" class="inp font-mono tabular-nums">
+
+        <label class="lbl mt-3">Search</label>
+        <input type="text" name="q" value="{{ filters.q }}" placeholder="title or company" class="inp">
+
+        <label class="flex items-center gap-2 mt-3 text-xs text-ink-600 dark:text-ink-400 cursor-pointer">
+          <input type="checkbox" name="archived" value="1" {% if filters.archived %}checked{% endif %}
+                 class="rounded border-ink-300 dark:border-ink-700 dark:bg-ink-900">
+          Include archived
+        </label>
+
+        {% if filters.status or filters.source or filters.min_score or filters.q or filters.location or filters.archived %}
+          <a href="/" class="text-xs text-indigo-600 dark:text-indigo-400 hover:underline mt-3 inline-block">clear filters</a>
+        {% endif %}
+      </form>
+
+      <div class="card">
+        <h3 class="card-h flex items-center justify-between">
+          <span>Source health</span>
+          <button hx-get="/source-health" hx-target="#health-panel" hx-swap="innerHTML"
+                  class="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200" title="Refresh health panel">
+            <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+          </button>
+        </h3>
+        <div id="health-panel">
+          {% include "_source_health.html" %}
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="col-span-9 xl:col-span-10 space-y-4">
+
+      <!-- Bulk actions strip -->
+      <div class="flex items-center gap-2 text-sm">
+        <span class="text-ink-600 dark:text-ink-400">{{ rows|length }} jobs match current filters.</span>
+        <span class="flex-1"></span>
+        <button class="btn-ghost"
+                hx-post="/bulk/resumes" hx-include="form.card" hx-target="body" hx-swap="outerHTML"
+                hx-indicator="#spin"
+                hx-confirm="Generate tailored resumes for the filtered jobs that don't have one? Capped at 15 per click. Calls the Anthropic API.">
+          <i data-lucide="file-text" class="w-4 h-4"></i>Generate resumes
+        </button>
+        <button class="btn-ghost"
+                hx-post="/bulk/cover-letters" hx-include="form.card" hx-target="body" hx-swap="outerHTML"
+                hx-indicator="#spin"
+                hx-confirm="Generate tailored cover letters for the filtered jobs that don't have one? Capped at 15 per click. Calls the Anthropic API.">
+          <i data-lucide="mail" class="w-4 h-4"></i>Generate cover letters
+        </button>
+      </div>
+
+      <!-- Table -->
+      {% if rows %}
+      <div class="rounded-xl border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 overflow-hidden shadow-sm">
+        <table class="w-full text-sm">
+          <thead class="bg-ink-50 dark:bg-ink-900/60 text-[11px] uppercase tracking-wider text-ink-500 dark:text-ink-400 border-b border-ink-200 dark:border-ink-800">
+            <tr>
+              <th class="text-left px-4 py-2.5 font-semibold">Job</th>
+              <th class="text-left px-4 py-2.5 font-semibold">Source</th>
+              <th class="text-left px-4 py-2.5 font-semibold">Match</th>
+              <th class="text-left px-4 py-2.5 font-semibold">Resume</th>
+              <th class="text-left px-4 py-2.5 font-semibold">Cover Letter</th>
+              <th class="text-left px-4 py-2.5 font-semibold">Status</th>
+              <th class="px-2 py-2.5"></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink-100 dark:divide-ink-800">
+            {% for r in rows %}
+              {% include "_row.html" %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="card text-center py-16">
+        <i data-lucide="search-x" class="w-10 h-10 mx-auto text-ink-400 mb-3"></i>
+        <p class="text-ink-500 dark:text-ink-400 text-sm">No jobs match these filters.</p>
+        <p class="text-ink-400 dark:text-ink-500 text-xs mt-1">Try clearing filters or hitting <kbd class="kbd">R</kbd> to refresh.</p>
+      </div>
+      {% endif %}
+    </main>
+  </div>
+
+  <!-- Right-side JD drawer -->
+  <div id="drawer-host"></div>
+
+  <!-- Toasts -->
+  <div id="toast-host" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <!-- Help / shortcuts overlay -->
+  <div x-cloak x-show="helpOpen" @keydown.escape.window="helpOpen = false"
+       class="fixed inset-0 z-40 bg-ink-900/60 backdrop-blur grid place-items-center" @click.self="helpOpen = false">
+    <div class="card w-[420px] max-w-[90vw]">
+      <h3 class="card-h">Keyboard shortcuts</h3>
+      <ul class="text-sm space-y-1.5 text-ink-700 dark:text-ink-200">
+        <li><kbd class="kbd">/</kbd> focus search</li>
+        <li><kbd class="kbd">R</kbd> refresh jobs</li>
+        <li><kbd class="kbd">S</kbd> score all</li>
+        <li><kbd class="kbd">J</kbd> / <kbd class="kbd">K</kbd> next / previous row</li>
+        <li><kbd class="kbd">↵</kbd> open JD drawer for selected row</li>
+        <li><kbd class="kbd">G</kbd> then <kbd class="kbd">R</kbd> generate resume for selected row</li>
+        <li><kbd class="kbd">G</kbd> then <kbd class="kbd">C</kbd> generate cover letter for selected row</li>
+        <li><kbd class="kbd">1-5</kbd> set status (1=not_applied, 2=applied, 3=interview, 4=rejected, 5=offer)</li>
+        <li><kbd class="kbd">A</kbd> archive selected row</li>
+        <li><kbd class="kbd">D</kbd> toggle dark mode</li>
+        <li><kbd class="kbd">?</kbd> show this help</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
